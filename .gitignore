@@ -3,6 +3,11 @@
 /ntfs-3g/
 /build/
 
+# FreeNTFS menu-bar app (gui/build-app.sh output, SwiftPM build folders)
+/gui/build/
+/gui/.build/
+/gui/.swiftpm/
+
 # Logs written by install.sh / ntfs-mount / ntfs-unmount at runtime
 *.log
 

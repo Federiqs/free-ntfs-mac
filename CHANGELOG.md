@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased — FreeNTFS menu-bar app (`gui/`)
+
+- New SwiftUI menu-bar app, a front end for the existing scripts with no
+  mount logic of its own. It shows:
+  - each connected NTFS volume as read-write (ours), read-only (macOS),
+    not mounted, or mounted by another driver;
+  - the `ntfs-autowatch` service state;
+  - Full Disk Access status, inferred only from the service's last mount
+    attempt in its log (there's no way to query it directly).
+
+  It also has a three-step setup window and a live log viewer. Build with
+  `gui/build-app.sh`. Details: [gui/README.md](gui/README.md).
+- Privilege paths follow MISTAKE.md:
+  - Raw-disk work only ever runs inside the root daemon ("Mount" restarts
+    it with `launchctl kickstart -k`) or under a real `sudo` in Terminal
+    ("In Terminal…").
+  - The admin-password popup is used only for enable/disable, the restart
+    and `ntfs-unmount`.
+  - `install.sh` runs in Terminal, because Homebrew refuses to run as root.
+- Verified:
+  - 26 unit tests, including the log parser against the real daemon log
+    and quoting round-tripped through `osascript`;
+  - `--status` against the live system (real drive, real daemon);
+  - the Full Disk Access deep link's anchor (`Privacy_AllFiles`) in macOS
+    26.6's System Settings bundle;
+  - the views rendered offscreen.
+- **Not yet verified:** any action behind the password prompt, and the
+  Terminal buttons, on a real setup.
+
 ## 0.2.1 — fix: mount failed whenever macOS's read-only mount was present
 
 - `bin/ntfs-mount`: create the `/Volumes/<name>` mount point *after*
