@@ -1,0 +1,223 @@
+#!/bin/bash
+# ntfs-autowatch — mount NTFS volumes read-write automatically when a drive
+# is plugged in. Opt-in: nothing enables it for you.
+#
+# Usage:
+#   ntfs-autowatch --enable            Install and start the LaunchDaemon
+#                                       (asks for your password once).
+#   ntfs-autowatch --disable           Stop and remove it. Volumes already
+#                                       mounted stay mounted.
+#   ntfs-autowatch --dry-run [--once]  Show what it would do, mount nothing
+#                                       (no root needed).
+#   ntfs-autowatch                     The watch loop itself — this is what
+#                                       the LaunchDaemon runs, as root.
+#
+# Each volume is handled once per attach. If you unmount it with
+# ntfs-unmount, or remount it read-only yourself, it stays that way until the
+# drive is unplugged and plugged back in. Volume names listed one per line in
+# /usr/local/etc/ntfs-autowatch.ignore are never touched.
+#
+# The mount itself is delegated to ntfs-mount, so dirty-flag clearing, the
+# settle delay and the poll-for-success loop are exactly the ones used by
+# hand.
+
+set -uo pipefail
+
+LABEL="local.free-ntfs-mac.autowatch"
+PLIST="/Library/LaunchDaemons/$LABEL.plist"
+LOG="/var/log/ntfs-autowatch.log"
+IGNORE_FILE="${NTFS_AUTOWATCH_IGNORE:-/usr/local/etc/ntfs-autowatch.ignore}"
+INTERVAL=3
+# macOS mounts a new NTFS volume read-only on its own a few seconds after it
+# appears; acting before that finishes can race it for the same device.
+SETTLE=5
+
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+NTFS_MOUNT="$(dirname "$SELF")/ntfs-mount"
+
+DRY_RUN=0
+ONCE=0
+
+info() { diskutil info "$1" 2>/dev/null; }
+field() { # field <diskutil-info-output> <label>
+  printf '%s\n' "$1" | awk -F': *' -v l="$2" '$0 ~ "^ *"l":" {sub(/^ */,"",$2); print $2; exit}'
+}
+is_mounted_rw() { mount | grep -qE "^fuse-t:.* on $1 \("; }
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
+die() { echo "$*" >&2; exit 1; }
+
+plist() { # plist <path-of-this-script>
+  # AbandonProcessGroup: the ntfs-3g processes serving the mounts are started
+  # from this job. Stopping or restarting the watcher must never take a live
+  # (possibly mid-write) mount down with it.
+  # HOME: FUSE-T's NFS server (go-nfsv4) writes its log under $HOME; set it
+  # explicitly rather than depend on what launchd provides a daemon.
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>$LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$1</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>AbandonProcessGroup</key>
+	<true/>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HOME</key>
+		<string>/var/root</string>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>$LOG</string>
+	<key>StandardErrorPath</key>
+	<string>$LOG</string>
+</dict>
+</plist>
+EOF
+}
+
+check_installed_copy() {
+  # launchd couldn't even execute this script from a checkout on ~/Desktop
+  # ("Operation not permitted", see MISTAKE.md), and a checkout can be
+  # moved anyway. The daemon must point at the installed copy.
+  case "$SELF" in
+    /Users/*) die "Usa la copia installata da install.sh:  /usr/local/bin/ntfs-autowatch --enable" ;;
+  esac
+  [ -x "$NTFS_MOUNT" ] || die "ntfs-mount non trovato in $NTFS_MOUNT. Esegui prima install.sh."
+}
+
+enable() {
+  local tmp
+  tmp=$(mktemp) || die "Impossibile creare un file temporaneo."
+  plist "$SELF" > "$tmp"
+  plutil -lint -s "$tmp" || { rm -f "$tmp"; die "plist generato non valido."; }
+  install -m 644 -o root -g wheel "$tmp" "$PLIST"
+  rm -f "$tmp"
+
+  # bootout first so re-running --enable picks up a changed plist.
+  launchctl bootout "system/$LABEL" 2>/dev/null
+  if launchctl bootstrap system "$PLIST"; then
+    echo "OK: montaggio automatico attivo. I dischi NTFS collegati da ora in poi"
+    echo "    verranno montati in scrittura da soli. Log: $LOG"
+    echo "    Per disattivarlo:  ntfs-autowatch --disable"
+    echo
+    echo "    Serve una volta sola: Impostazioni di Sistema > Privacy e sicurezza >"
+    echo "    Accesso completo al disco, aggiungi /usr/local/bin/ntfs-3g e"
+    echo "    /usr/local/bin/ntfsfix (trascinali dal Finder: Vai > Vai alla cartella)."
+    echo "    Senza, il servizio non può aprire il disco (\"Operation not permitted\")."
+  else
+    die "launchctl bootstrap fallito — il plist è in $PLIST."
+  fi
+}
+
+disable() {
+  launchctl bootout "system/$LABEL" 2>/dev/null
+  rm -f "$PLIST"
+  echo "OK: montaggio automatico disattivato. I volumi già montati restano montati"
+  echo "    (smontali con ntfs-unmount quando vuoi)."
+}
+
+handle() { # handle <diskN or diskNsN>
+  local device="/dev/$1" out fstype label mountpoint
+  out=$(info "$device")
+  fstype=$(field "$out" "File System Personality")
+  # "Microsoft Basic Data" is also used by exFAT/FAT32 partitions.
+  [ "$fstype" != "NTFS" ] && return 0
+
+  label=$(field "$out" "Volume Name")
+  [ -z "$label" ] && label="$1"
+  mountpoint="/Volumes/$label"
+
+  if [ -f "$IGNORE_FILE" ] && grep -qxF "$label" "$IGNORE_FILE"; then
+    log "$label ($device): presente in $IGNORE_FILE — lo lascio com'è."
+    return 0
+  fi
+  if is_mounted_rw "$mountpoint"; then
+    log "$label ($device): già montato in scrittura su $mountpoint — nessuna azione."
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "$label ($device): lo monterei in scrittura su $mountpoint (dry-run, nessuna azione)."
+    return 0
+  fi
+
+  log "$label ($device): rilevato, lo monto in scrittura..."
+  "$NTFS_MOUNT" "$device"
+  if is_mounted_rw "$mountpoint"; then
+    log "$label: OK, scrivibile su $mountpoint."
+  else
+    # No retry: if it failed once (permissions, a damaged volume) hammering
+    # the device every few seconds won't fix it.
+    # ntfs-3g can report success while FUSE-T's own NFS mount step fails;
+    # only FUSE-T's log (under the daemon's HOME) says why.
+    log "$label: montaggio fallito, non riprovo finché il disco non viene ricollegato. Dettagli in /tmp/ntfs-mount.log e $HOME/Library/Logs/fuse-t/fuse-t.log"
+  fi
+}
+
+# Both lists are rebuilt from what's attached right now on every pass, which
+# is what forgets an unplugged drive — plugging it back in then counts as a
+# new attach. Keyed by device node, which is fine within a single attach
+# even though nodes aren't stable across reconnects.
+seen=""     # "node:first-seen-epoch" entries
+handled=""  # nodes already dealt with during their current attach
+
+first_seen() { local e; for e in $seen; do [ "${e%%:*}" = "$1" ] && echo "${e#*:}"; done; }
+
+scan_once() {
+  local now node first next_seen="" next_handled=""
+  now=$(date +%s)
+  for node in $(diskutil list | awk '/Microsoft Basic Data|Windows_NTFS/ {print $NF}'); do
+    first=$(first_seen "$node")
+    [ -z "$first" ] && first=$now
+    next_seen="$next_seen $node:$first"
+    case " $handled " in
+      *" $node "*) next_handled="$next_handled $node"; continue ;;
+    esac
+    [ $((now - first)) -lt "$SETTLE" ] && continue
+    handle "$node"
+    next_handled="$next_handled $node"
+  done
+  seen=$next_seen
+  handled=$next_handled
+}
+
+case "${1:-}" in
+  --enable|--disable)
+    [ "$1" = "--enable" ] && check_installed_copy
+    if [ "$(id -u)" -ne 0 ]; then
+      exec sudo "$0" "$@"
+    fi
+    if [ "$1" = "--enable" ]; then enable; else disable; fi
+    exit 0
+    ;;
+  --dry-run)
+    DRY_RUN=1
+    if [ "${2:-}" = "--once" ]; then
+      ONCE=1
+      SETTLE=0
+    fi
+    ;;
+  "")
+    [ "$(id -u)" -eq 0 ] || die "Il ciclo di controllo va eseguito come root dal LaunchDaemon: usa 'ntfs-autowatch --enable' (oppure --dry-run per una prova)."
+    [ -x "$NTFS_MOUNT" ] || die "ntfs-mount non trovato in $NTFS_MOUNT."
+    ;;
+  *)
+    die "Uso: ntfs-autowatch --enable | --disable | --dry-run [--once]"
+    ;;
+esac
+
+log "ntfs-autowatch avviato (controllo ogni ${INTERVAL}s$([ "$DRY_RUN" -eq 1 ] && echo ', dry-run'))."
+while true; do
+  scan_once
+  [ "$ONCE" -eq 1 ] && break
+  sleep "$INTERVAL"
+done

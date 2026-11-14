@@ -1,0 +1,162 @@
+#!/bin/bash
+# ntfs-mount — mount NTFS volumes read-write on macOS via ntfs-3g + FUSE-T.
+#
+# Usage:
+#   ntfs-mount                 Scan all connected disks for NTFS volumes and
+#                               offer to (re)mount each one read-write.
+#   ntfs-mount /dev/diskNsN    Mount one specific partition directly.
+#   ntfs-mount -y              Non-interactive: mount every NTFS volume found
+#                               without asking.
+#
+# You can just run "ntfs-mount" (no sudo) — it re-execs itself with sudo
+# and asks for your password once, right in the terminal. A GUI password
+# popup was tried first but macOS denies raw disk access (TCC/Full Disk
+# Access) to processes elevated that way, even as root — only a real
+# sudo session has it, so that's what we use.
+
+set -uo pipefail
+
+# --- Self-elevate ------------------------------------------------------
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo "$0" "$@"
+fi
+
+NTFS3G=/usr/local/bin/ntfs-3g
+NTFSFIX=/usr/local/bin/ntfsfix
+MOUNT_OPTS="local,allow_other,auto_xattr"
+# Measured alternatives, NOT the default — only A/B-tested against an NTFS
+# image on the internal SSD, never on a real USB drive (remounting one needs
+# a root terminal). Numbers in README "Performance".
+#   ,rwsize=262144   ~2x the sequential ceiling on the SSD image. Irrelevant
+#                    on a USB 2.0 link. Careful: rwsize=1048576 made writes
+#                    30-50x SLOWER, so this knob has cliffs.
+#   ,noappledouble   No more ._ files, ~2x faster small-file creation — but
+#                    extended attributes can't be stored at all, and cp of a
+#                    file that has any exits with an error (data still copied).
+# MOUNT_OPTS="local,allow_other,auto_xattr,rwsize=262144"
+ASSUME_YES=0
+LOG="/tmp/ntfs-mount.log"
+: > "$LOG"
+
+if [ "${1:-}" = "-y" ]; then
+  ASSUME_YES=1
+  shift
+fi
+
+if [ ! -x "$NTFS3G" ]; then
+  echo "ntfs-3g non trovato in $NTFS3G." >&2
+  echo "Esegui prima install.sh del repository free-ntfs-mac." >&2
+  exit 1
+fi
+
+info() { diskutil info "$1" 2>/dev/null; }
+field() { # field <diskutil-info-output> <label>
+  printf '%s\n' "$1" | awk -F': *' -v l="$2" '$0 ~ "^ *"l":" {sub(/^ */,"",$2); print $2; exit}'
+}
+is_mounted_rw() { mount | grep -qE "^fuse-t:.* on $1 \("; }
+
+mount_one() {
+  local device="$1" label="$2"
+  local mountpoint="/Volumes/$label"
+
+  if is_mounted_rw "$mountpoint"; then
+    echo "  * $label è già montato in scrittura su $mountpoint — nessuna azione."
+    return 0
+  fi
+
+  echo "  -> Monto $device ($label) su $mountpoint in scrittura..."
+  {
+    echo "--- $(date) : $device -> $mountpoint ---"
+    # Release any existing mount. diskutil first: it goes through
+    # DiskArbitration, which deletes the /Volumes/<name> folder it created
+    # for macOS's own read-only mount before returning. umount -f catches
+    # what diskutil can't (a busy volume, a stale FUSE-T mount).
+    diskutil unmount "$device" 2>/dev/null
+    umount -f "$mountpoint" 2>/dev/null
+    # Give the kernel a moment to actually release the device node — mounting
+    # ntfs-3g immediately after diskutil unmount returns can race against
+    # this and fail with no useful error at all.
+    sleep 1
+    # Only now create the mount point. Created before the unmount (as up to
+    # 0.2.0), the folder was the native mount's, and macOS deleted it along
+    # with that mount — even when umount -f did the unmounting — so FUSE-T
+    # had nothing to mount onto: "mount ... exit status 66" in its log while
+    # ntfs-3g itself reported success. See MISTAKE.md.
+    mkdir -p "$mountpoint"
+    # Clear the Windows "dirty" flag if set (very common after an unsafe
+    # eject, hibernation, or power loss on Windows) — ntfs-3g refuses to
+    # mount read-write otherwise. Safe to run unconditionally.
+    "$NTFSFIX" --clear-dirty "$device"
+    "$NTFS3G" "$device" "$mountpoint" -o "$MOUNT_OPTS"
+    echo "ntfs-3g exit status: $?"
+  } >>"$LOG" 2>&1
+
+  # FUSE-T's first mount of a session has to spin up its NFS loopback
+  # server, which can take a few seconds — a single check right away can
+  # report "failed" on a mount that was actually about to succeed. Poll
+  # instead of checking once.
+  local waited=0
+  while [ "$waited" -lt 5 ] && ! is_mounted_rw "$mountpoint"; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if is_mounted_rw "$mountpoint"; then
+    echo "  OK: $label è ora scrivibile su $mountpoint"
+  else
+    echo "  Montaggio di $label fallito. Dettagli in $LOG:" >&2
+    tail -n 6 "$LOG" >&2
+  fi
+}
+
+# --- Direct device given on the command line --------------------------------
+if [ $# -ge 1 ]; then
+  device="$1"
+  out=$(info "$device")
+  label=$(field "$out" "Volume Name")
+  [ -z "$label" ] && label="$(basename "$device")"
+  mount_one "$device" "$label"
+  exit 0
+fi
+
+# --- Scan mode ----------------------------------------------------------
+echo "Cerco volumi NTFS collegati..."
+found_any=0
+
+while read -r node; do
+  [ -z "$node" ] && continue
+  device="/dev/$node"
+  out=$(info "$device")
+  fstype=$(field "$out" "File System Personality")
+  [ "$fstype" != "NTFS" ] && continue
+
+  found_any=1
+  label=$(field "$out" "Volume Name")
+  [ -z "$label" ] && label="$node"
+  mountpoint="/Volumes/$label"
+
+  if is_mounted_rw "$mountpoint"; then
+    echo "  * $label ($device) è già montato in scrittura su $mountpoint — nessuna azione."
+    continue
+  fi
+
+  current_mp=$(field "$out" "Mount Point")
+  state="smontato"
+  [ -n "$current_mp" ] && state="montato in sola lettura su $current_mp"
+  echo "  * $label ($device): $state"
+
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    mount_one "$device" "$label"
+    continue
+  fi
+
+  read -r -p "    Montarlo in scrittura? [S/n] " ans
+  case "$ans" in
+    n|N|no|NO) continue ;;
+    *) mount_one "$device" "$label" ;;
+  esac
+done < <(diskutil list | awk '/Microsoft Basic Data|Windows_NTFS/ {print $NF}')
+
+if [ "$found_any" -eq 0 ]; then
+  echo "Nessun volume NTFS trovato tra i dischi collegati."
+fi

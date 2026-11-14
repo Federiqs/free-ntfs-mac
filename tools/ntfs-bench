@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+# ntfs-bench — measure real throughput of a mounted volume (no root needed).
+#
+# Usage:
+#   tools/ntfs-bench /Volumes/NomeDisco [MB] [file_piccoli]
+#     MB            size of the sequential test file (default 1024)
+#     file_piccoli  how many 32KB files for the small-file test (default 500)
+#
+# Writes a temporary file (and folder) on the volume and deletes them at the
+# end. Use at least ~512MB: with smaller files the read is served from cache
+# and the number is meaningless (we saw 1.3GB/s "reads" over a USB 2.0 link
+# with a 64MB file).
+import fcntl, os, sys, time
+
+F_NOCACHE = getattr(fcntl, "F_NOCACHE", 48)
+BS = 1 << 20
+
+
+def nocache(fd):
+    # Bypass macOS's page cache, otherwise reads of a just-written file come
+    # back from RAM instead of from the disk.
+    try:
+        fcntl.fcntl(fd, F_NOCACHE, 1)
+    except OSError:
+        pass
+
+
+def seq_write(path, size_mb):
+    # Random data, so nothing along the way can cheat by compressing zeros.
+    pool = [os.urandom(BS) for _ in range(64)]
+    t = time.monotonic()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    nocache(fd)
+    for i in range(size_mb):
+        os.write(fd, pool[i % len(pool)])
+    os.fsync(fd)
+    os.close(fd)
+    os.sync()
+    return size_mb / (time.monotonic() - t)
+
+
+def seq_read(path):
+    t = time.monotonic()
+    fd = os.open(path, os.O_RDONLY)
+    nocache(fd)
+    n = 0
+    while True:
+        b = os.read(fd, BS)
+        if not b:
+            break
+        n += len(b)
+    os.close(fd)
+    return n / BS / (time.monotonic() - t)
+
+
+def small_files(d, count, size=32 * 1024):
+    data = os.urandom(size)
+    names = [os.path.join(d, f"f{i:05d}") for i in range(count)]
+    os.makedirs(d)
+    t = time.monotonic()
+    for p in names:
+        with open(p, "wb") as f:
+            f.write(data)
+    os.sync()
+    create = count / (time.monotonic() - t)
+    t = time.monotonic()
+    for p in names:
+        with open(p, "rb") as f:
+            f.read()
+    read = count / (time.monotonic() - t)
+    t = time.monotonic()
+    for p in names:
+        os.unlink(p)
+    os.rmdir(d)
+    delete = count / (time.monotonic() - t)
+    return create, read, delete
+
+
+def main():
+    if len(sys.argv) < 2 or not os.path.isdir(sys.argv[1]):
+        sys.exit("Uso: ntfs-bench /Volumes/NomeDisco [MB] [file_piccoli]")
+    d = sys.argv[1]
+    size_mb = int(sys.argv[2]) if len(sys.argv) > 2 else 1024
+    nsmall = int(sys.argv[3]) if len(sys.argv) > 3 else 500
+
+    path = os.path.join(d, "ntfs-bench.tmp")
+    print(f"Scrittura/lettura sequenziale di {size_mb}MB su {d}...", flush=True)
+    try:
+        w = seq_write(path, size_mb)
+        r = seq_read(path)
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+    print(f"  scrittura {w:6.1f} MB/s   lettura {r:6.1f} MB/s", flush=True)
+
+    if nsmall:
+        print(f"{nsmall} file da 32KB...", flush=True)
+        c, rd, dl = small_files(os.path.join(d, "ntfs-bench-piccoli.tmp"), nsmall)
+        print(f"  creazione {c:5.0f} file/s   lettura {rd:5.0f} file/s   cancellazione {dl:5.0f} file/s")
+
+
+if __name__ == "__main__":
+    main()

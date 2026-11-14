@@ -1,0 +1,51 @@
+#!/bin/bash
+# ntfs-unmount — safely unmount an NTFS volume mounted read-write by ntfs-mount.
+#
+# Usage:
+#   ntfs-unmount /Volumes/NomeDisco
+#   ntfs-unmount -a              Unmount every ntfs-3g/FUSE-T NTFS mount found
+#
+# Just run it — it re-execs itself with sudo and asks for your password once.
+
+set -uo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo "$0" "$@"
+fi
+
+is_mounted_rw() { mount | grep -qE "^fuse-t:.* on $1 \("; }
+
+unmount_one() {
+  local mountpoint="$1"
+
+  if ! is_mounted_rw "$mountpoint"; then
+    echo "$mountpoint non risulta montato in scrittura — nessuna azione."
+    return 0
+  fi
+
+  echo "Smonto $mountpoint..."
+  if umount -f "$mountpoint" 2>/tmp/ntfs-unmount.log; then
+    echo "  OK: smontato."
+  else
+    echo "  Smontaggio di $mountpoint fallito (ci sono file aperti?)." >&2
+    cat /tmp/ntfs-unmount.log >&2
+  fi
+}
+
+if [ "${1:-}" = "-a" ]; then
+  found=0
+  while read -r mp; do
+    [ -z "$mp" ] && continue
+    found=1
+    unmount_one "$mp"
+  done < <(mount | awk -F' on | \\(' '/^fuse-t:/ {print $2}')
+  [ "$found" -eq 0 ] && echo "Nessun volume NTFS scrivibile attualmente montato."
+  exit 0
+fi
+
+if [ $# -lt 1 ]; then
+  echo "Uso: ntfs-unmount /Volumes/NomeDisco   oppure   ntfs-unmount -a" >&2
+  exit 1
+fi
+
+unmount_one "$1"

@@ -1,0 +1,16 @@
+# Build artifacts (install.sh clones ntfs-3g into a temp dir, never here —
+# but ignore it anyway in case someone builds in-tree for debugging)
+/ntfs-3g/
+/build/
+
+# Logs written by install.sh / ntfs-mount / ntfs-unmount at runtime
+*.log
+
+# macOS
+.DS_Store
+._*
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
