@@ -300,30 +300,31 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The manual path: Terminal + ntfs-unmount's own sudo re-exec. Verified
+    /// live that the admin popup denies this too (see Commands.terminalUnmountScript) —
+    /// unmounting isn't a raw-disk operation, but the popup's elevation path
+    /// is denied it anyway. Don't route this through `elevated(_:prompt:)`.
     func unmount(mountPoint: String, label: String, key: String) async {
-        guard let command = Commands.unmount(mountPoint: mountPoint) else { return }
-        busy[key] = "Unmounting…"
+        guard let script = Commands.terminalUnmountScript(mountPoint: mountPoint) else { return }
+        guard openInTerminal(name: "unmount-\(key)", contents: script) else { return }
+        busy[key] = "Unmounting… (type your password in Terminal)"
         defer { busy[key] = nil }
-        let outcome = await elevated(command, prompt: "FreeNTFS wants to unmount \(label) with ntfs-unmount.")
-        if case .cancelled = outcome { return }
-        let snap = await reload()
-        let stillMounted = MountTable.current().contains { $0.isFuseT && $0.mountPoint == mountPoint }
-        if !stillMounted {
-            var detail = "It's no longer in the mount table."
-            if snap.daemon.isRunning {
-                detail += " Auto-mount won't remount it until the drive is reconnected (or you press Mount)."
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            let snap = await reload()
+            let stillMounted = MountTable.current().contains { $0.isFuseT && $0.mountPoint == mountPoint }
+            if !stillMounted {
+                var detail = "It's no longer in the mount table."
+                if snap.daemon.isRunning {
+                    detail += " Auto-mount won't remount it until the drive is reconnected (or you press Mount)."
+                }
+                banner = Banner(kind: .success, title: "\(label) unmounted", detail: detail)
+                return
             }
-            banner = Banner(kind: .success, title: "\(label) unmounted", detail: detail)
-        } else {
-            var output = ""
-            switch outcome {
-            case .succeeded(let o): output = o
-            case .failed(_, let m): output = m
-            case .cancelled: break
-            }
-            banner = Banner(kind: .failure, title: "\(label) is still mounted",
-                            detail: (output.isEmpty ? "" : output + "\n") + "A file may still be open on it.")
         }
+        // No claim either way: the user may not have typed the password yet,
+        // or closed the Terminal window.
     }
 
     func openInFinder(_ path: String) {

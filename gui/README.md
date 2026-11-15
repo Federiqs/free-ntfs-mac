@@ -75,7 +75,7 @@ real root process, but macOS still denies it raw disk access. So:
 | Turn auto-mount on / off | Popup → `ntfs-autowatch --enable` / `--disable` | No |
 | **Mount Read-Write** (auto-mount on) | Popup → `launchctl kickstart -k system/local.free-ntfs-mac.autowatch`. The restarted service starts with an empty "already handled" list and, after its 5s settle delay, hands every connected NTFS volume that isn't read-write (and isn't in the ignore list) to `ntfs-mount`. The raw-disk work happens **inside the root daemon**, the path verified on the real drive. The confirmation dialog names any other volume this would also mount. | Only inside the daemon |
 | Mount in Terminal | Opens Terminal running `ntfs-mount /dev/diskNsN`, which re-execs itself with a real `sudo`: the documented manual path | Yes, under real `sudo` |
-| Unmount | Popup → `ntfs-unmount /Volumes/<name>` (`umount -f` of the FUSE-T NFS mount) | No |
+| Unmount | Opens Terminal running `ntfs-unmount /Volumes/<name>` under a real `sudo` — **not** the popup. Verified live: the popup denied this too, every time, with `Operation not permitted`, even though `umount -f` on a FUSE-T NFS mount never touches `/dev/diskN`. The identical command worked immediately from a real sudo Terminal session. See MISTAKE.md. | No raw disk, but the popup is denied it anyway |
 | Full Disk Access | Opens System Settings → Privacy & Security → Full Disk Access, and selects `ntfs-3g` and `ntfsfix` in a Finder window to drag in. Also: reveal FUSE-T's real `go-nfsv4` file, copy the paths. | — |
 
 After every action the app re-reads the real state and reports *that*,
@@ -110,17 +110,22 @@ that attempt.
 - The menu, setup and log views, rendered offscreen in several states
   (`FreeNTFS --render-snapshots <dir>`, a development aid).
 
+**Verified live, interactively, by the owner:**
+- Unmount: the admin popup failed every time with `Operation not permitted` —
+  reproduced twice, identically. The same `ntfs-unmount` command run by hand
+  in a real sudo Terminal session worked immediately. Fixed: Unmount now
+  opens Terminal like Mount does, not the popup. Covered by
+  `testUnmountGoesThroughTerminalNotThePopup`.
+
 **Not yet verified** (needs a person at the keyboard and a password, and
 must not be tried against a live setup from an automated session):
-- Every action behind the admin popup:
-  - enable/disable through the popup rather than `sudo`;
-  - the `kickstart` mount path end to end;
-  - unmount through the popup. That one shouldn't need raw disk access, but
-    that's the reasoning, not a test.
-- The Terminal-based install and mount buttons opening Terminal and
-  completing.
-- Clicking through the app interactively: the views were only rendered
-  offscreen.
+- Enable/disable auto-mount through the popup rather than `sudo`.
+- The `kickstart` mount path end to end.
+- The fixed Terminal-based Unmount button, end to end (the underlying
+  `ntfs-unmount` command is proven; the button's own Terminal-opening and
+  polling path isn't yet).
+- Clicking through the rest of the app interactively: the views were only
+  rendered offscreen, except for the live menu check above.
 
 ## Not in this first version
 

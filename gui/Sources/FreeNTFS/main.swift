@@ -29,8 +29,8 @@ if args.contains("--print-commands") {
     admin("Restart auto-mount service (Mount via service)", Commands.restartAutowatch())
     print("   would mount: \(snap.volumesADaemonRestartWouldMount.map(\.label))\n")
     for v in snap.volumes {
-        if let mp = v.state.mountPoint, v.state.isReadWrite, let cmd = Commands.unmount(mountPoint: mp) {
-            admin("Unmount \(v.label)", cmd)
+        if let mp = v.state.mountPoint, v.state.isReadWrite, let script = Commands.terminalUnmountScript(mountPoint: mp) {
+            print("== Unmount \(v.label) in Terminal (.command file; the admin popup denies this too, see MISTAKE.md)\n\(script)")
         }
         if let script = Commands.terminalMountScript(deviceIdentifier: v.deviceIdentifier) {
             print("== Mount \(v.label) in Terminal (.command file)\n\(script)")

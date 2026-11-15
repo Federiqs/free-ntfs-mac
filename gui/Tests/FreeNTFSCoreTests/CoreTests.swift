@@ -283,6 +283,7 @@ final class CommandTests: XCTestCase {
 
     func testGeneratedCommandFilesAreValidBash() throws {
         for (name, script) in [("mount", Commands.terminalMountScript(deviceIdentifier: "disk15s2")!),
+                               ("unmount", Commands.terminalUnmountScript(mountPoint: "/Volumes/Disk2")!),
                                ("install", Commands.terminalInstallScript(cliDirectory: "/Applications/Free NTFS.app/Contents/Resources/cli"))] {
             let url = try Commands.writeCommandFile(named: "test-\(name)", contents: script)
             defer { try? FileManager.default.removeItem(at: url) }
@@ -293,6 +294,16 @@ final class CommandTests: XCTestCase {
         }
         XCTAssertTrue(Commands.terminalMountScript(deviceIdentifier: "disk15s2")!
             .contains("'/usr/local/bin/ntfs-mount' '/dev/disk15s2'"))
+    }
+
+    /// The admin popup denies ntfs-unmount too (verified live, not just
+    /// raw disk opens — see MISTAKE.md), so unmount must go through Terminal
+    /// like mount does, not through AdminRunner's popup path.
+    func testUnmountGoesThroughTerminalNotThePopup() {
+        let script = Commands.terminalUnmountScript(mountPoint: "/Volumes/Disk2")!
+        XCTAssertTrue(script.contains("'/usr/local/bin/ntfs-unmount' '/Volumes/Disk2'"))
+        XCTAssertNil(Commands.terminalUnmountScript(mountPoint: "relative"))
+        XCTAssertNil(Commands.terminalUnmountScript(mountPoint: "/Volumes/a\nb"))
     }
 
     func testFullDiskAccessURL() {

@@ -212,6 +212,24 @@ that's already been tried and found broken.
   cause was the mount-point folder (see "Mounting" above). No
   `SessionCreate`/`ProcessType`/LaunchAgent+sudoers redesign is needed.
 
+- **The GUI admin-password popup (`osascript ... with administrator
+  privileges`) denies `umount` too, not just opening a raw disk device.**
+  The GUI app's Unmount button ran `ntfs-unmount` through that popup on the
+  reasoning that `umount -f` on a FUSE-T NFS mount never touches
+  `/dev/diskN` — but it failed live, twice, identically: genuine root (the
+  popup does grant that), `umount: unmount(/Volumes/Disk2): Operation not
+  permitted`. The exact same command, typed by hand in a real `sudo`
+  Terminal session seconds later, worked immediately. So the restriction
+  from the entry above ("GUI popup denies raw disk access") is broader than
+  it first looked — it also covers unmounting an existing FUSE-T mount, which
+  genuinely is a `/dev/diskN`-adjacent operation (it's the loopback NFS
+  client giving up its hold on the device-backed mount), even though it
+  doesn't call `open()` on the device itself. Fix: route Unmount through a
+  real Terminal `sudo` session, exactly like the Mount button already did —
+  don't assume an operation is "safe for the popup" just because it isn't a
+  literal raw-device open; if it touches a mount table entry backed by a
+  real device, test it live before trusting the reasoning.
+
 ## Performance
 
 - **A small benchmark file measures the cache, not the disk.** Our first

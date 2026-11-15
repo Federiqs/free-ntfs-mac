@@ -59,6 +59,26 @@ public enum Commands {
           "clear"] + body).joined(separator: "\n") + "\n"
     }
 
+    /// Runs ntfs-unmount in a real Terminal session, under a real `sudo`.
+    /// Verified live: the admin password popup denies this too, not just raw
+    /// disk opens — `umount -f` on the FUSE-T NFS mount failed every time
+    /// through the popup with "Operation not permitted", and the identical
+    /// command worked immediately in a real sudo Terminal session. See
+    /// MISTAKE.md.
+    public static func terminalUnmountScript(mountPoint: String) -> String? {
+        guard let command = unmount(mountPoint: mountPoint) else { return nil }
+        return commandFile(
+            header: "Unmounts \(mountPoint) with the installed ntfs-unmount.",
+            body: [
+                "echo " + Shell.quote("free-ntfs-mac: unmounting \(mountPoint)."),
+                "echo " + Shell.quote("sudo will ask for your Mac password here (nothing is shown while you type)."),
+                "echo",
+                command,
+                "echo",
+                "echo " + Shell.quote("Done. FreeNTFS shows the result in its menu; you can close this window."),
+            ])
+    }
+
     /// Runs the installed ntfs-mount for one device in a real Terminal session.
     /// ntfs-mount re-execs itself with sudo there, which is the manual path
     /// README documents (and the one with raw disk access).
