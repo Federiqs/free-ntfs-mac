@@ -35,6 +35,13 @@ and helper scripts needed to make it actually usable day to day.
   terminal, no password prompt. Off unless you enable it.
 - `tools/ntfs-bench` — measures real read/write throughput on a mounted
   volume, so you can check your own drive instead of trusting ours.
+- `gui/` — **FreeNTFS**, an optional menu-bar app on top of the scripts
+  above (new, partly verified, see [gui/README.md](gui/README.md)). It
+  shows each NTFS volume's real state, whether auto-mount is on, and
+  whether Full Disk Access is working, based on the service's last mount
+  attempt. It walks you through setup, including the one manual Full Disk
+  Access step. Mount, unmount and enable go through the same scripts; it
+  has no mount logic of its own.
 
 ## Requirements
 
