@@ -87,7 +87,7 @@ that attempt.
 ## What's tested and what isn't
 
 **Verified:**
-- `swift test`: 26 tests. They cover:
+- `swift test`: 27 tests. They cover:
   - `mount` / `diskutil` / `launchctl print` parsing;
   - the log parser, against an excerpt of the real daemon log (Full
     Disk Access failure, then the mount-point bug, then success);
@@ -96,7 +96,10 @@ that attempt.
   - the 0.2.1-fix detector;
   - shell + AppleScript quoting, round-tripped through `osascript` (without
     elevation) with quotes, `$`, backticks and backslashes;
-  - `bash -n` on the generated Terminal scripts.
+  - `bash -n` on the generated Terminal scripts, including the Terminal-based
+    unmount script;
+  - that Unmount builds a Terminal script, not an admin-popup command (see
+    below for why).
 - `--status` against the live system: correctly reported the real 2TB drive
   as read-write at `/Volumes/Disk2`, the daemon running with its real pid,
   7 mount attempts in its log, and "Full Disk Access: working" from the last
@@ -110,22 +113,21 @@ that attempt.
 - The menu, setup and log views, rendered offscreen in several states
   (`FreeNTFS --render-snapshots <dir>`, a development aid).
 
-**Verified live, interactively, by the owner:**
-- Unmount: the admin popup failed every time with `Operation not permitted` —
-  reproduced twice, identically. The same `ntfs-unmount` command run by hand
-  in a real sudo Terminal session worked immediately. Fixed: Unmount now
-  opens Terminal like Mount does, not the popup. Covered by
-  `testUnmountGoesThroughTerminalNotThePopup`.
+**Verified live, interactively, by the owner, on the real 2TB drive:**
+- Unmount: first found broken — the admin popup failed every time with
+  `Operation not permitted`, reproduced twice identically, even though
+  `umount -f` on a FUSE-T mount never opens `/dev/diskN`. Fixed to open
+  Terminal like Mount does; re-tested and confirmed working end to end
+  (banner, and independently with `mount`/`ls /Library/LaunchDaemons`).
+- Mount Read-Write (the `launchctl kickstart` path): confirmed the daemon
+  mounted the drive and the app reported it correctly.
+- Turn Off Auto-mount: confirmed the plist was removed and the already-
+  mounted volume was left alone, exactly as designed.
+- Turn On Auto-mount: confirmed the daemon came back with a real pid.
 
-**Not yet verified** (needs a person at the keyboard and a password, and
-must not be tried against a live setup from an automated session):
-- Enable/disable auto-mount through the popup rather than `sudo`.
-- The `kickstart` mount path end to end.
-- The fixed Terminal-based Unmount button, end to end (the underlying
-  `ntfs-unmount` command is proven; the button's own Terminal-opening and
-  polling path isn't yet).
-- Clicking through the rest of the app interactively: the views were only
-  rendered offscreen, except for the live menu check above.
+Every one of these was checked two ways: the app's own banner, and an
+independent command (`mount`, `ls /Library/LaunchDaemons`) run outside the
+app. Nothing in this first version is still unverified.
 
 ## Not in this first version
 
